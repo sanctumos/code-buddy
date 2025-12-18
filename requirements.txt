@@ -1,0 +1,15 @@
+# GitHub Webhook Processor - Production Dependencies
+# Python 3.9+ required
+
+# Core Web Framework
+Flask>=2.3.0
+
+# HTTP Requests
+requests>=2.31.0
+
+# Environment Management
+python-dotenv>=1.0.0
+
+# Structured Logging
+structlog>=23.0.0
+
