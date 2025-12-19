@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Code Buddy MCP Server
+Code Buddy MCP Server (STDIO)
 
-A lightweight Model Context Protocol (MCP) server that exposes GitHub webhook events
-to Sanctum and Letta AI agents through Cursor.
+A lightweight Model Context Protocol (MCP) server that exposes tools for Cursor
+to send messages to Letta agents. Uses STDIO transport for security (no open ports).
 
 Copyright (C) 2025 SanctumOS
 
@@ -13,34 +13,50 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 """
 
-import argparse
 import asyncio
 import json
 import logging
 import os
-import signal
+import sys
+from pathlib import Path
 from typing import Dict, Any
 
 from dotenv import load_dotenv
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
+from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+# Import Letta integration
+from letta_integration import LettaClient
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure minimal logging - WARNING/ERROR only, to stderr
+# This must happen before any other imports that might configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.WARNING,
+    format='%(levelname)s: %(message)s',
+    stream=sys.stderr,
+    force=True
 )
+
 logger = logging.getLogger(__name__)
 
-# Import shared event store
-from event_store import get_event_store
+# Global Letta client instance
+letta_client: LettaClient | None = None
 
-# Global event store instance (shared with webhook processor)
-event_store_instance = get_event_store()
+
+def get_letta_client() -> LettaClient:
+    """Get or create the Letta client instance."""
+    global letta_client
+    if letta_client is None:
+        try:
+            letta_client = LettaClient()
+        except Exception as e:
+            logger.error(f"Failed to initialize Letta client: {e}")
+            raise
+    return letta_client
 
 
 def create_server() -> Server:
@@ -53,55 +69,25 @@ def create_server() -> Server:
         """Return the list of available tools."""
         return [
             Tool(
-                name="get_recent_events",
-                description="Get recent GitHub webhook events. Can filter by event type, repository, and time range.",
+                name="send_message_to_letta",
+                description="Send a message to the Letta agent. This allows Cursor to communicate with the same Letta agent that receives GitHub webhook events.",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "event_type": {
+                        "message": {
                             "type": "string",
-                            "description": "Filter by event type (e.g., 'issues', 'push', 'pull_request')"
+                            "description": "The message content to send to the Letta agent"
                         },
-                        "repository": {
+                        "agent_id": {
                             "type": "string",
-                            "description": "Filter by repository name or full name"
+                            "description": "Optional agent ID (defaults to configured agent)"
                         },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of events to return (default: 50, max: 100)",
-                            "default": 50,
-                            "minimum": 1,
-                            "maximum": 100
-                        },
-                        "since": {
+                        "identity_id": {
                             "type": "string",
-                            "description": "ISO timestamp to filter events since (e.g., '2025-01-15T10:00:00Z')"
+                            "description": "Optional identity ID (defaults to 'code_buddy')"
                         }
                     },
-                    "required": []
-                }
-            ),
-            Tool(
-                name="get_event_stats",
-                description="Get statistics about stored GitHub events including counts by type and repositories.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            ),
-            Tool(
-                name="get_event_by_id",
-                description="Get a specific event by its delivery ID.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "delivery_id": {
-                            "type": "string",
-                            "description": "The delivery ID of the event to retrieve"
-                        }
-                    },
-                    "required": ["delivery_id"]
+                    "required": ["message"]
                 }
             )
         ]
@@ -110,46 +96,34 @@ def create_server() -> Server:
     async def call_tool_handler(tool_name: str, arguments: dict):
         """Handle tool calls."""
         try:
-            if tool_name == "get_recent_events":
-                # Run in thread pool since event_store is synchronous
-                loop = asyncio.get_event_loop()
-                events = await loop.run_in_executor(
-                    None,
-                    event_store_instance.get_events,
-                    arguments.get("event_type"),
-                    arguments.get("repository"),
-                    min(arguments.get("limit", 50), 100),
-                    arguments.get("since")
-                )
-                result = {
-                    "count": len(events),
-                    "events": events
-                }
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            
-            elif tool_name == "get_event_stats":
-                # Run in thread pool since event_store is synchronous
-                loop = asyncio.get_event_loop()
-                stats = await loop.run_in_executor(None, event_store_instance.get_stats)
-                return [TextContent(type="text", text=json.dumps(stats, indent=2))]
-            
-            elif tool_name == "get_event_by_id":
-                delivery_id = arguments.get("delivery_id")
-                if not delivery_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "delivery_id is required"}))]
+            if tool_name == "send_message_to_letta":
+                message = arguments.get("message")
+                if not message:
+                    return [TextContent(type="text", text=json.dumps({"error": "message is required"}))]
                 
-                # Run in thread pool since event_store is synchronous
-                loop = asyncio.get_event_loop()
-                event = await loop.run_in_executor(
-                    None,
-                    event_store_instance.get_event_by_id,
-                    delivery_id
-                )
+                agent_id = arguments.get("agent_id")
+                identity_id = arguments.get("identity_id")
                 
-                if event:
-                    return [TextContent(type="text", text=json.dumps(event, indent=2))]
-                else:
-                    return [TextContent(type="text", text=json.dumps({"error": f"Event with delivery_id '{delivery_id}' not found"}))]
+                # Get Letta client
+                try:
+                    client = get_letta_client()
+                except Exception as e:
+                    return [TextContent(type="text", text=json.dumps({"error": f"Letta client not available: {e}"}))]
+                
+                # Send message in thread pool (since Letta client is synchronous)
+                loop = asyncio.get_event_loop()
+                try:
+                    response = await loop.run_in_executor(
+                        None,
+                        client.send_message,
+                        message,
+                        agent_id,
+                        identity_id
+                    )
+                    return [TextContent(type="text", text=json.dumps({"response": response}, indent=2))]
+                except Exception as e:
+                    logger.error(f"Error sending message to Letta: {e}")
+                    return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
             
             else:
                 return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {tool_name}"}))]
@@ -161,101 +135,59 @@ def create_server() -> Server:
     return server
 
 
-async def async_main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Code Buddy MCP Server - Lightweight MCP server for GitHub webhook events"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.getenv("MCP_PORT", "8001")),
-        help="Port to run the server on (default: 8001 or MCP_PORT env var)"
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default=os.getenv("MCP_HOST", "127.0.0.1"),
-        help="Host to bind to (default: 127.0.0.1 or MCP_HOST env var)"
-    )
-    parser.add_argument(
-        "--allow-external",
-        action="store_true",
-        help="Allow external connections (default: localhost-only for security)"
-    )
-    
-    args = parser.parse_args()
-    
-    # Determine host binding
-    if args.allow_external:
-        host = "0.0.0.0"
-        logger.warning("⚠️  WARNING: External connections are allowed. This may pose security risks.")
-    else:
-        host = args.host
-        if host == "127.0.0.1":
-            logger.info("🔒 Security: Server bound to localhost only. Use --allow-external for network access.")
-    
-    logger.info(f"Starting Code Buddy MCP Server on {host}:{args.port}...")
+async def main():
+    """Main entry point for STDIO mode."""
+    # Initialize Letta client early to fail fast if misconfigured
+    try:
+        get_letta_client()
+    except Exception as e:
+        logger.error(f"Failed to initialize Letta client: {e}")
+        logger.error("Make sure LETTA_BASE_URL and LETTA_AGENT_ID are set in your environment")
+        sys.exit(1)
     
     # Create MCP server
     server = create_server()
     
-    # Create SSE transport
-    sse_transport = SseServerTransport("/messages/")
-    
-    # Create Starlette app with SSE endpoints
-    from starlette.applications import Starlette
-    from starlette.routing import Route, Mount
-    from starlette.responses import Response
-    
-    async def sse_endpoint(request):
-        """SSE connection endpoint."""
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
+    try:
+        # Use stdio transport - this handles stdin/stdout wrapping
+        # The context manager yields (read_stream, write_stream)
+        async with stdio_server() as (read_stream, write_stream):
+            # Run the server with the stdio streams
+            # server.run() will block and handle all JSON-RPC messages
             await server.run(
-                streams[0],  # read_stream
-                streams[1],  # write_stream
+                read_stream,
+                write_stream,
                 server.create_initialization_options()
             )
-        return Response()
-    
-    # Create Starlette app
-    app = Starlette(routes=[
-        Route("/sse", sse_endpoint, methods=["GET"]),
-        Mount("/messages/", app=sse_transport.handle_post_message),
-    ])
-    
-    # Start server
-    logger.info("Starting server with SSE transport...")
-    import uvicorn
-    
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=args.port,
-        log_level="info"
-    )
-    
-    server_instance = uvicorn.Server(config)
-    
-    # Handle shutdown signals
-    def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down gracefully...")
-        server_instance.should_exit = True
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start server
-    await server_instance.serve()
-
-
-def main():
-    """Synchronous entry point."""
-    asyncio.run(async_main())
+    except ExceptionGroup as eg:
+        # Handle ExceptionGroup from anyio TaskGroup (Python 3.11+)
+        # On Windows, we get OSError [Errno 22] when flushing stdout
+        # This is a known issue - the server works fine, but flush fails on exit
+        if sys.platform == 'win32':
+            flush_errors = [e for e in eg.exceptions if isinstance(e, OSError) and e.errno == 22]
+            if len(flush_errors) == len(eg.exceptions):
+                # All errors are Windows flush errors - non-fatal
+                # The server has already done its job successfully
+                logger.warning("Windows stdout flush issue (non-fatal, server completed successfully)")
+                return  # Exit gracefully
+        # If not all errors are flush errors, re-raise
+        raise
+    except BaseExceptionGroup as eg:
+        # Handle BaseExceptionGroup (Python 3.11+ alternative)
+        if sys.platform == 'win32':
+            flush_errors = [e for e in eg.exceptions if isinstance(e, OSError) and e.errno == 22]
+            if len(flush_errors) == len(eg.exceptions):
+                logger.warning("Windows stdout flush issue (non-fatal, server completed successfully)")
+                return
+        raise
+    except KeyboardInterrupt:
+        # Graceful shutdown on Ctrl+C
+        pass
+    except Exception as e:
+        # Log errors to stderr only - never to stdout
+        logger.error(f"Server error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())

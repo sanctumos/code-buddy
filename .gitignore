@@ -1,5 +1,4 @@
 tmp/
-events.json
 *.log
 __pycache__/
 *.pyc

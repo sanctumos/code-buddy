@@ -32,6 +32,9 @@ import structlog
 from flask import Flask, request, jsonify, abort
 from dotenv import load_dotenv
 
+# Import Letta integration
+from letta_integration import LettaClient
+
 # Load environment variables
 load_dotenv()
 
@@ -73,6 +76,14 @@ class WebhookProcessor:
         self.logger = logger.bind(component="webhook_processor")
         self.event_count = 0
         self.start_time = datetime.utcnow()
+        
+        # Initialize Letta client
+        try:
+            self.letta_client = LettaClient()
+            self.logger.info("Letta client initialized successfully")
+        except Exception as e:
+            self.logger.error("Failed to initialize Letta client", error=str(e))
+            self.letta_client = None
     
     def verify_signature(self, payload_body: bytes, signature_header: str) -> bool:
         """
@@ -306,22 +317,29 @@ class WebhookProcessor:
             event_count=self.event_count
         )
         
-        # Store event for MCP server access
-        try:
-            from event_store import get_event_store
-            event_store = get_event_store()
-            event_store.add_event(event)
-        except Exception as e:
-            self.logger.warning(f"Failed to store event in event store: {e}")
-        
-        # TODO: Add custom event processing logic here
-        # This is where you would integrate with your own systems
+        # Send to Letta agent if client is available
+        letta_response = None
+        if self.letta_client:
+            try:
+                letta_response = self.letta_client.send_github_event(event)
+                self.logger.info(
+                    "Event sent to Letta agent",
+                    response_length=len(letta_response) if letta_response else 0
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Failed to send event to Letta agent",
+                    error=str(e)
+                )
+        else:
+            self.logger.warning("Letta client not available, skipping agent notification")
         
         return {
             'status': 'processed',
             'event_id': event.get('delivery_id'),
             'processed_at': datetime.utcnow().isoformat(),
-            'event_count': self.event_count
+            'event_count': self.event_count,
+            'letta_response': letta_response
         }
 
 
