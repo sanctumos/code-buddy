@@ -104,6 +104,9 @@ def create_server() -> Server:
                 agent_id = arguments.get("agent_id")
                 identity_id = arguments.get("identity_id")
                 
+                # Prefix message to indicate it's from Cursor, not the normal user
+                prefixed_message = f"[Username: @CursorAgent (User Commissioned), Telegram_Bot ID: N/A]\n\n{message}"
+                
                 # Get Letta client
                 try:
                     client = get_letta_client()
@@ -116,7 +119,7 @@ def create_server() -> Server:
                     response = await loop.run_in_executor(
                         None,
                         client.send_message,
-                        message,
+                        prefixed_message,
                         agent_id,
                         identity_id
                     )
