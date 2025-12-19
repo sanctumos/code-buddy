@@ -19,9 +19,12 @@ GitHub Organization
     ├─→ Webhook Processor (Flask)
     │   ├─→ HMAC Signature Verification
     │   ├─→ Event Parsing & Normalization
-    │   └─→ Event Processing
+    │   ├─→ Event Processing
+    │   └─→ Event Store (events.json)
     │
     └─→ MCP Server (Cursor-addressable)
+        ├─→ Event Store (events.json)
+        ├─→ MCP Tools (get_recent_events, get_event_stats, etc.)
         ├─→ Sanctum Agent Access
         └─→ Letta Agent Access
 ```
@@ -32,18 +35,21 @@ GitHub Organization
    - Receives GitHub organization webhook events
    - Validates HMAC-SHA256 signatures for security
    - Parses and normalizes events (issues, PRs, pushes, releases, etc.)
+   - Stores events in shared event store
    - Provides health check and statistics endpoints
 
-2. **MCP Server** (Coming Soon)
+2. **MCP Server** (`mcp_server.py`)
    - Cursor-addressable Model Context Protocol server
-   - Exposes GitHub events to AI agents
-   - Real-time event streaming
+   - Exposes GitHub events to AI agents via MCP tools
+   - Server-Sent Events (SSE) transport for real-time communication
    - Query interface for agents to access coding activity history
+   - Lightweight implementation (~300 lines)
 
-3. **Event Processing Pipeline**
-   - Normalized event format for consistent agent consumption
-   - Event filtering and routing
-   - Integration points for Sanctum and Letta agents
+3. **Event Store** (`event_store.py`)
+   - Shared event storage (file-based persistence)
+   - Thread-safe event storage and retrieval
+   - Filtering by event type, repository, and time range
+   - Statistics and querying capabilities
 
 ## 🚀 Quick Start
 
@@ -87,10 +93,19 @@ GitHub Organization
      -F active=true
    ```
 
-5. **Start the webhook processor**
+5. **Start the services**
+
+   **Terminal 1 - Webhook Processor:**
    ```bash
    python webhook_processor.py
    ```
+
+   **Terminal 2 - MCP Server:**
+   ```bash
+   python mcp_server.py
+   ```
+
+   The webhook processor runs on port 5000 (default) and the MCP server runs on port 8001 (default).
 
 ## 📋 Configuration
 
@@ -232,17 +247,77 @@ pytest test_webhook_processor.py -v
 - **HTTPS Required**: Production deployments require SSL/TLS
 - **Input Validation**: All payloads are validated before processing
 
+## 🔌 MCP Server Tools
+
+The MCP server exposes the following tools for AI agents:
+
+### `get_recent_events`
+Get recent GitHub webhook events with optional filtering.
+
+**Parameters:**
+- `event_type` (optional): Filter by event type (e.g., 'issues', 'push', 'pull_request')
+- `repository` (optional): Filter by repository name
+- `limit` (optional): Maximum number of events (default: 50, max: 100)
+- `since` (optional): ISO timestamp to filter events since
+
+**Example:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_recent_events",
+    "arguments": {
+      "event_type": "issues",
+      "limit": 10
+    }
+  }
+}
+```
+
+### `get_event_stats`
+Get statistics about stored events.
+
+**Example:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_event_stats",
+    "arguments": {}
+  }
+}
+```
+
+### `get_event_by_id`
+Get a specific event by its delivery ID.
+
+**Parameters:**
+- `delivery_id` (required): The delivery ID of the event
+
+**Example:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_event_by_id",
+    "arguments": {
+      "delivery_id": "12345678-1234-1234-1234-123456789abc"
+    }
+  }
+}
+```
+
 ## 🚧 Roadmap
 
 - [x] GitHub webhook processor
 - [x] Event parsing and normalization
 - [x] Health check and statistics endpoints
-- [ ] MCP server implementation
-- [ ] Cursor integration
-- [ ] Sanctum agent integration
-- [ ] Letta agent integration
-- [ ] Event history and querying
-- [ ] Real-time event streaming
+- [x] MCP server implementation
+- [x] Event storage and querying
+- [ ] Cursor integration documentation
+- [ ] Sanctum agent integration examples
+- [ ] Letta agent integration examples
+- [ ] Real-time event streaming enhancements
 
 ## 🤝 Contributing
 
@@ -260,4 +335,5 @@ This project is licensed under the GNU Affero General Public License v3.0 - see 
 ---
 
 **Status**: 🚧 In Development | **Version**: 0.1.0
+
 

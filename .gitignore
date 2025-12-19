@@ -1,2 +1,12 @@
 tmp/
+events.json
+*.log
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.env
 

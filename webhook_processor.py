@@ -306,6 +306,14 @@ class WebhookProcessor:
             event_count=self.event_count
         )
         
+        # Store event for MCP server access
+        try:
+            from event_store import get_event_store
+            event_store = get_event_store()
+            event_store.add_event(event)
+        except Exception as e:
+            self.logger.warning(f"Failed to store event in event store: {e}")
+        
         # TODO: Add custom event processing logic here
         # This is where you would integrate with your own systems
         
